@@ -1,0 +1,17 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+pyside6 = "<7.0,>=6.6"
+opencv-python = ">=4.8"
+pyzbar = ">=0.1.9"
+easyocr = ">=1.7"
+qrcode = {extras = ["pil"], version = ">=7.4"}
+
+[dev-packages]
+
+[requires]
+python_version = "3.14"
+python_full_version = "3.14.3"
