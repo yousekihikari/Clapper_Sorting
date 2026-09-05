@@ -51,7 +51,7 @@ def analyze_video_qr(
     thumbnail_bytes: bytes | None = None
     scene_name: str | None = None
     cut_count = ""
-    ocr_status = "OCR利用不可" if ocr_reader is None else "OCR未実行"
+    ocr_status = "OCR利用不可" if ocr_reader is None else "OCR未検出"
 
     try:
         for _ in range(MAX_INITIAL_FRAMES):
@@ -61,11 +61,11 @@ def analyze_video_qr(
 
             if thumbnail_bytes is None:
                 thumbnail_bytes = make_thumbnail_bytes(frame)
-                if ocr_reader is not None:
-                    cut_count, ocr_status = recognize_cut_count(frame, ocr_reader)
 
-            scene_name = decode_qr_from_frame(frame, qr_detector)
+            scene_name, qr_points = detect_qr_from_frame(frame, qr_detector)
             if scene_name:
+                if ocr_reader is not None:
+                    cut_count, ocr_status = recognize_cut_count(frame, ocr_reader, qr_points)
                 break
     except cv2.error as error:
         return AnalysisResult(
@@ -96,14 +96,19 @@ def analyze_video_qr(
 
 def decode_qr_from_frame(frame: np.ndarray, detector: cv2.QRCodeDetector) -> str | None:
     """Return a non-empty UTF-8 QR payload from an OpenCV BGR frame."""
+    return detect_qr_from_frame(frame, detector)[0]
+
+
+def detect_qr_from_frame(frame: np.ndarray, detector: cv2.QRCodeDetector) -> tuple[str | None, np.ndarray | None]:
+    """Return the QR payload and its corners for downstream card localization."""
     try:
-        decoded_text, _, _ = detector.detectAndDecode(frame)
+        decoded_text, points, _ = detector.detectAndDecode(frame)
     except cv2.error:
-        decoded_text = ""
+        decoded_text, points = "", None
 
     normalized = _normalize_payload(decoded_text)
     if normalized:
-        return normalized
+        return normalized, points
     return _decode_with_pyzbar(frame)
 
 
@@ -118,14 +123,14 @@ def make_thumbnail_bytes(frame: np.ndarray) -> bytes | None:
     return encoded.tobytes() if success else None
 
 
-def _decode_with_pyzbar(frame: np.ndarray) -> str | None:
+def _decode_with_pyzbar(frame: np.ndarray) -> tuple[str | None, np.ndarray | None]:
     """Use pyzbar only when it and its Windows zbar DLL are available."""
     try:
         from pyzbar.pyzbar import ZBarSymbol, decode
 
         symbols: Iterable[object] = decode(frame, symbols=[ZBarSymbol.QRCODE])
     except (ImportError, OSError):
-        return None
+        return None, None
 
     for symbol in symbols:
         data = getattr(symbol, "data", b"")
@@ -136,8 +141,14 @@ def _decode_with_pyzbar(frame: np.ndarray) -> str | None:
             continue
         normalized = _normalize_payload(payload)
         if normalized:
-            return normalized
-    return None
+            rect = getattr(symbol, "rect", None)
+            if rect is None:
+                return normalized, None
+            left, top = rect.left, rect.top
+            right, bottom = left + rect.width, top + rect.height
+            points = np.array([[[left, top], [right, top], [right, bottom], [left, bottom]]], dtype=np.float32)
+            return normalized, points
+    return None, None
 
 
 def _normalize_payload(payload: str) -> str | None:

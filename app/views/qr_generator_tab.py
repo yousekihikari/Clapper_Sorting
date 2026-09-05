@@ -1,29 +1,24 @@
-"""View for preparing scene-name QR codes for filming."""
+"""View for single and batch QR-card preparation."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
+    QFileDialog, QCheckBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 
 class QrGeneratorTab(QWidget):
-    """Second tab: QR preview, export, and print request interface."""
+    """Second tab: UTF-8 QR preview, image output, bulk output, and printing."""
 
-    preview_requested = Signal(str)
-    save_requested = Signal(str, str)
-    print_requested = Signal(str)
+    preview_requested = Signal(str, bool)
+    save_requested = Signal(str, str, bool)
+    batch_save_requested = Signal(object, object, bool)
+    print_requested = Signal(str, bool)
     status_message = Signal(str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -32,30 +27,41 @@ class QrGeneratorTab(QWidget):
         self._connect_signals()
 
     def _build_ui(self) -> None:
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(14)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_single_group())
+        layout.addWidget(self._build_batch_group())
+        layout.addWidget(self._build_preview_group(), 1)
+        layout.addLayout(self._build_actions())
 
-        root_layout.addWidget(self._build_input_group())
-        root_layout.addWidget(self._build_preview_group(), 1)
-        root_layout.addLayout(self._build_action_area())
-        root_layout.addStretch(1)
-
-    def _build_input_group(self) -> QGroupBox:
-        group = QGroupBox("QRコード内容")
-        layout = QFormLayout(group)
-
+    def _build_single_group(self) -> QGroupBox:
+        group = QGroupBox("現在のQRコード")
+        form = QFormLayout(group)
         self.scene_name_edit = QLineEdit()
         self.scene_name_edit.setPlaceholderText("例: シーン01_玄関")
         self.scene_name_edit.setClearButtonEnabled(True)
-        self.scene_name_edit.setToolTip("日本語を含むシーン名をUTF-8でQRコードに記録します")
-        layout.addRow("シーン名:", self.scene_name_edit)
+        self.cut_frame_check = QCheckBox("カット数を書き込む枠付きカードとしてプレビュー・印刷する")
+        form.addRow("シーン名:", self.scene_name_edit)
+        form.addRow("レイアウト:", self.cut_frame_check)
+        return group
+
+    def _build_batch_group(self) -> QGroupBox:
+        group = QGroupBox("一括QRコード生成")
+        layout = QVBoxLayout(group)
+        layout.addWidget(QLabel("シーン名を1行に1件ずつ入力してください（日本語可）。"))
+        self.batch_scene_edit = QPlainTextEdit()
+        self.batch_scene_edit.setPlaceholderText("シーン01_玄関\nシーン02_リビング\nシーン03_キッチン")
+        self.batch_scene_edit.setMaximumHeight(100)
+        layout.addWidget(self.batch_scene_edit)
+        self.batch_progress = QProgressBar()
+        self.batch_progress.setVisible(False)
+        layout.addWidget(self.batch_progress)
         return group
 
     def _build_preview_group(self) -> QGroupBox:
         group = QGroupBox("QRコードプレビュー")
         layout = QVBoxLayout(group)
-
         self.preview_label = QLabel("シーン名を入力すると、ここにQRコードを表示します。")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(320, 320)
@@ -64,22 +70,23 @@ class QrGeneratorTab(QWidget):
         layout.addWidget(self.preview_label)
         return group
 
-    def _build_action_area(self) -> QHBoxLayout:
+    def _build_actions(self) -> QHBoxLayout:
         layout = QHBoxLayout()
         self.save_button = QPushButton("QRコード画像を保存")
-        self.print_button = QPushButton("印刷")
-        self.save_button.setMinimumHeight(38)
-        self.print_button.setMinimumHeight(38)
-
-        layout.addStretch(1)
-        layout.addWidget(self.save_button)
-        layout.addWidget(self.print_button)
+        self.batch_save_button = QPushButton("QRコードを一括保存")
+        self.batch_card_save_button = QPushButton("カット数枠付きで一括保存")
+        self.print_button = QPushButton("現在のプレビューを印刷")
+        for button in (self.save_button, self.batch_save_button, self.batch_card_save_button, self.print_button):
+            button.setMinimumHeight(38)
+            layout.addWidget(button)
         return layout
 
     def _connect_signals(self) -> None:
         self.scene_name_edit.textChanged.connect(self._request_preview)
-        self.scene_name_edit.returnPressed.connect(self._request_preview)
+        self.cut_frame_check.toggled.connect(self._request_preview)
         self.save_button.clicked.connect(self._request_save)
+        self.batch_save_button.clicked.connect(lambda: self._request_batch_save(False))
+        self.batch_card_save_button.clicked.connect(lambda: self._request_batch_save(True))
         self.print_button.clicked.connect(self._request_print)
 
     def _scene_name(self) -> str:
@@ -89,52 +96,52 @@ class QrGeneratorTab(QWidget):
         scene_name = self._scene_name()
         if not scene_name:
             self.preview_label.setText("シーン名を入力すると、ここにQRコードを表示します。")
+            self.preview_label.setPixmap(QPixmap())
             return
-        # The QR service will render an image and call set_preview_pixmap.
-        self.preview_requested.emit(scene_name)
-        self.preview_label.setText(f"「{scene_name}」のQRコードを生成します")
+        self.preview_requested.emit(scene_name, self.cut_frame_check.isChecked())
 
     def _request_save(self) -> None:
-        scene_name = self._scene_name()
-        if not self._require_scene_name(scene_name):
+        scene_name = self._require_scene_name()
+        if scene_name is None:
             return
-
-        destination, _ = QFileDialog.getSaveFileName(
-            self,
-            "QRコード画像を保存",
-            f"{scene_name}.png",
-            "PNG画像 (*.png)",
-        )
+        destination, _ = QFileDialog.getSaveFileName(self, "QRコード画像を保存", f"{scene_name}.png", "PNG画像 (*.png)")
         if destination:
-            self.save_requested.emit(scene_name, destination)
-            self.status_message.emit("QRコード画像保存サービスは次のモジュールで接続します。", 5000)
+            self.save_requested.emit(scene_name, destination, self.cut_frame_check.isChecked())
+
+    def _request_batch_save(self, include_cut_count_frame: bool) -> None:
+        scene_names = [line.strip() for line in self.batch_scene_edit.toPlainText().splitlines() if line.strip()]
+        if not scene_names:
+            QMessageBox.warning(self, "シーン名未入力", "一括作成するシーン名を1行に1件ずつ入力してください。")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "一括保存先フォルダを選択", str(Path.home()))
+        if directory:
+            self.batch_save_requested.emit(scene_names, Path(directory), include_cut_count_frame)
 
     def _request_print(self) -> None:
+        scene_name = self._require_scene_name()
+        if scene_name is not None:
+            self.print_requested.emit(scene_name, self.cut_frame_check.isChecked())
+
+    def _require_scene_name(self) -> str | None:
         scene_name = self._scene_name()
-        if not self._require_scene_name(scene_name):
-            return
-        self.print_requested.emit(scene_name)
-        self.status_message.emit("印刷サービスは次のモジュールで接続します。", 5000)
-
-    def _require_scene_name(self, scene_name: str) -> bool:
         if scene_name:
-            return True
+            return scene_name
         QMessageBox.warning(self, "シーン名未入力", "QRコードに記録するシーン名を入力してください。")
-        return False
+        return None
 
-    def set_preview_pixmap(self, pixmap: object) -> None:
-        """Set a QR image produced by the upcoming QR service.
+    def set_preview_image(self, image: QImage) -> None:
+        pixmap = QPixmap.fromImage(image)
+        self.preview_label.setPixmap(pixmap.scaled(self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
-        The loose argument type avoids coupling this view to Pillow/qrcode. The
-        service will provide a QPixmap in the next module.
-        """
-        from PySide6.QtGui import QPixmap
+    def set_batch_running(self, running: bool) -> None:
+        self.batch_save_button.setEnabled(not running)
+        self.batch_card_save_button.setEnabled(not running)
+        self.batch_scene_edit.setEnabled(not running)
+        self.batch_progress.setVisible(running)
+        if running:
+            self.batch_progress.setRange(0, 0)
 
-        if isinstance(pixmap, QPixmap) and not pixmap.isNull():
-            self.preview_label.setPixmap(
-                pixmap.scaled(
-                    self.preview_label.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+    def set_batch_progress(self, current: int, total: int, message: str) -> None:
+        self.batch_progress.setRange(0, total)
+        self.batch_progress.setValue(current)
+        self.batch_progress.setFormat(f"{message} ({current} / {total})")
