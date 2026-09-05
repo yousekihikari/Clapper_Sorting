@@ -6,18 +6,31 @@ from io import BytesIO
 from pathlib import Path
 
 import qrcode
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtGui import QImage
 
 from app.services.file_organizer import sanitize_scene_name
 
 
 def generate_qr_image(scene_name: str) -> Image.Image:
-    """Create a high-contrast QR image with an explicit UTF-8 payload."""
+    """Create a QR image with UTF-8 payload and a readable scene label below it."""
     qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=12, border=4)
     qr.add_data(scene_name.encode("utf-8"))
     qr.make(fit=True)
-    return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    qr_image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    margin = 40
+    label_height = 100
+    canvas = Image.new("RGB", (qr_image.width + margin * 2, qr_image.height + margin * 2 + label_height), "white")
+    canvas.paste(qr_image, (margin, margin))
+
+    draw = ImageDraw.Draw(canvas)
+    font = _scene_label_font(canvas.width - margin * 2, scene_name)
+    text_box = draw.textbbox((0, 0), scene_name, font=font)
+    text_width = text_box[2] - text_box[0]
+    text_x = (canvas.width - text_width) // 2
+    text_y = margin + qr_image.height + (label_height - (text_box[3] - text_box[1])) // 2 - text_box[1]
+    draw.text((text_x, text_y), scene_name, fill="black", font=font)
+    return canvas
 
 
 def generate_cut_count_card(scene_name: str) -> Image.Image:
@@ -55,3 +68,22 @@ def pil_image_to_qimage(image: Image.Image) -> QImage:
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return QImage.fromData(buffer.getvalue(), "PNG")
+
+
+def _scene_label_font(max_width: int, scene_name: str) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Select a Japanese-capable Windows font and shrink long labels to fit."""
+    font_candidates = (
+        Path(r"C:\Windows\Fonts\meiryo.ttc"),
+        Path(r"C:\Windows\Fonts\YuGothM.ttc"),
+        Path(r"C:\Windows\Fonts\msgothic.ttc"),
+    )
+    font_path = next((path for path in font_candidates if path.is_file()), None)
+    if font_path is None:
+        return ImageFont.load_default()
+
+    for size in range(48, 15, -2):
+        font = ImageFont.truetype(str(font_path), size)
+        box = ImageDraw.Draw(Image.new("RGB", (1, 1))).textbbox((0, 0), scene_name, font=font)
+        if box[2] - box[0] <= max_width:
+            return font
+    return ImageFont.truetype(str(font_path), 16)
