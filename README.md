@@ -30,11 +30,10 @@ Windows向けビルド済みデータがあります、RAM16GB以上推奨でPyi
 ## 起動方法
 
 Python 3.10以上を使用してください。現在の開発・検証環境は Python 3.14
-(`C:\Python314\python.exe`) です。
 
 ```powershell
-& 'C:\Python314\python.exe' -m pip install -r requirements.txt
-& 'C:\Python314\python.exe' main.py
+& python.exe -m pip install -r requirements.txt
+& python.exe main.py
 ```
 
 ## ディレクトリ構成
